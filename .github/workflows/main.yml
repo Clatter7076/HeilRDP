@@ -1,4 +1,4 @@
-name: Secure RDP with Cloudflared
+name: Secure RDP with Cloudflare API
 
 on:
   workflow_dispatch:
@@ -17,25 +17,17 @@ jobs:
     steps:
     - name: Check for required secrets
       env:
-        CLOUDFLARE_TOKEN: ${{ secrets.CLOUDFLARE_TOKEN }}
+        CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
       run: |
-        if (-not $env:CLOUDFLARE_TOKEN -or -not $env:RDP_PASSWORD) {
-          throw "Missing required secrets. Please set CLOUDFLARE_TOKEN and RDP_PASSWORD in your repository secrets."
+        if (-not $env:CLOUDFLARE_API_TOKEN -or -not $env:CLOUDFLARE_ACCOUNT_ID -or -not $env:RDP_PASSWORD) {
+          throw "Missing required secrets. Please set CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID, and RDP_PASSWORD in your repository secrets."
         }
 
     - name: Install Cloudflared using Chocolatey
       run: |
         choco install cloudflared -y
-
-    - name: Configure Cloudflared
-      env:
-        CLOUDFLARE_TOKEN: ${{ secrets.CLOUDFLARE_TOKEN }}
-      run: |
-        $configPath = "$env:USERPROFILE\.cloudflared\config.yml"
-        New-Item -ItemType Directory -Force -Path "$env:USERPROFILE\.cloudflared"
-        Set-Content -Path $configPath -Value "token: $env:CLOUDFLARE_TOKEN"
-        Write-Host "Cloudflared configured with token-based authentication."
 
     - name: Enable and Configure Remote Desktop
       env:
@@ -47,44 +39,58 @@ jobs:
         Set-LocalUser -Name "runneradmin" -Password (ConvertTo-SecureString -AsPlainText $env:RDP_PASSWORD -Force)
         Write-Host "RDP enabled and configured."
 
-    - name: Create and Run Cloudflare Tunnel
+    - name: Create and Configure Cloudflare Tunnel
+      env:
+        CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       run: |
         $tunnelName = "rdp-tunnel-" + (Get-Random)
-        $tunnelOutput = cloudflared tunnel create $tunnelName 2>&1
-        if ($LASTEXITCODE -ne 0) { 
-          Write-Host "Tunnel creation output: $tunnelOutput"
-          throw "Failed to create Cloudflare tunnel" 
-        }
         
-        $tunnelId = ($tunnelOutput | Select-String -Pattern "Created tunnel .* with id (.*)").Matches.Groups[1].Value
-        if (-not $tunnelId) { throw "Failed to extract tunnel ID" }
-        
-        $configContent = @"
-        tunnel: $tunnelId
-        credentials-file: $env:USERPROFILE\.cloudflared\$tunnelId.json
-        ingress:
-          - service: rdp://localhost:3389
-          - service: http_status:404
-        "@
-        Set-Content -Path "$env:USERPROFILE\.cloudflared\config.yml" -Value $configContent
-        
-        Start-Process -FilePath cloudflared -ArgumentList "tunnel --config $env:USERPROFILE\.cloudflared\config.yml run $tunnelName" -NoNewWindow
-        
+        # Create tunnel using Cloudflare API
+        $createTunnelBody = @{
+          name = $tunnelName
+          tunnel_secret = [Convert]::ToBase64String([System.Text.Encoding]::UTF8.GetBytes((New-Guid).ToString()))
+        } | ConvertTo-Json
+
+        $createTunnelResponse = Invoke-RestMethod -Uri "https://api.cloudflare.com/client/v4/accounts/$env:CLOUDFLARE_ACCOUNT_ID/tunnels" `
+          -Method Post `
+          -Headers @{"Authorization" = "Bearer $env:CLOUDFLARE_API_TOKEN"; "Content-Type" = "application/json"} `
+          -Body $createTunnelBody
+
+        $tunnelId = $createTunnelResponse.result.id
+        Write-Host "Tunnel created with ID: $tunnelId"
+
+        # Configure tunnel
+        $configureBody = @{
+          tunnel = @{
+            credentials = @{
+              account = $env:CLOUDFLARE_ACCOUNT_ID
+              tunnel_secret = $createTunnelResponse.result.tunnel_secret
+              tunnel_id = $tunnelId
+            }
+          }
+          ingress = @(
+            @{
+              service = "rdp://localhost:3389"
+              hostname = "$tunnelName.trycloudflare.com"
+            },
+            @{
+              service = "http_status:404"
+            }
+          )
+        } | ConvertTo-Json -Depth 10
+
+        $configPath = "$env:USERPROFILE\.cloudflared\config.json"
+        New-Item -ItemType Directory -Force -Path "$env:USERPROFILE\.cloudflared"
+        Set-Content -Path $configPath -Value $configureBody
+
+        # Start the tunnel
+        Start-Process -FilePath cloudflared -ArgumentList "tunnel run --config $configPath $tunnelId" -NoNewWindow
+
         Start-Sleep -Seconds 15
-        
-        $tunnelInfo = cloudflared tunnel info $tunnelName 2>&1
-        if ($LASTEXITCODE -ne 0) { 
-          Write-Host "Tunnel info output: $tunnelInfo"
-          throw "Failed to get tunnel info" 
-        }
-        
-        $tunnelUrl = ($tunnelInfo | Select-String -Pattern "https://.+\.trycloudflare\.com").Matches.Value
-        if (-not $tunnelUrl) { 
-          $tunnelUrl = "$tunnelName.trycloudflare.com"
-        }
-        
+
         Write-Host "Cloudflare Tunnel created and running."
-        Write-Host "RDP Address: $tunnelUrl"
+        Write-Host "RDP Address: $tunnelName.trycloudflare.com"
         Write-Host "Username: runneradmin"
         Write-Host "Password: Use the RDP_PASSWORD secret"
 
