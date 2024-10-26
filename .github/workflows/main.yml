@@ -32,11 +32,17 @@ jobs:
 
     - name: Enable and configure Remote Desktop
       run: |
+        # Enable Remote Desktop
         Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0
         Enable-NetFirewallRule -DisplayGroup "Remote Desktop"
+        
+        # Optional: Enable Network Level Authentication
         Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 1
+        
+        # Create or update the runneradmin user password
         $Password = ConvertTo-SecureString "${{ secrets.RDP_PASSWORD }}" -AsPlainText -Force
         Set-LocalUser -Name "runneradmin" -Password $Password
+        
         Write-Host "RDP is now enabled and configured."
 
     - name: Create Ngrok tunnel
@@ -80,3 +86,4 @@ jobs:
         
         # Keep the session alive for the specified timeout duration
         Start-Sleep -Seconds $Timeout
+    
