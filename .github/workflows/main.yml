@@ -24,17 +24,18 @@ jobs:
           throw "Missing required secrets. Please set CLOUDFLARE_TOKEN and RDP_PASSWORD in your repository secrets."
         }
 
-    - name: Install Cloudflared
+    - name: Install Cloudflared using Chocolatey
       run: |
-        Invoke-WebRequest -Uri https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe -OutFile cloudflared.exe
-        Move-Item .\cloudflared.exe C:\Windows\System32\cloudflared.exe
+        choco install cloudflared -y
 
-    - name: Configure Cloudflared
+    - name: Authenticate Cloudflared
       env:
         CLOUDFLARE_TOKEN: ${{ secrets.CLOUDFLARE_TOKEN }}
       run: |
         New-Item -ItemType Directory -Force -Path $env:USERPROFILE\.cloudflared
         Set-Content -Path "$env:USERPROFILE\.cloudflared\cert.pem" -Value $env:CLOUDFLARE_TOKEN
+        cloudflared tunnel login
+        if (-not $?) { throw "Cloudflared authentication failed" }
 
     - name: Enable and Configure Remote Desktop
       env:
@@ -50,7 +51,10 @@ jobs:
       run: |
         $tunnelName = "rdp-tunnel-" + (Get-Random)
         $tunnelOutput = cloudflared tunnel create $tunnelName
+        if (-not $?) { throw "Failed to create Cloudflare tunnel" }
+        
         $tunnelId = ($tunnelOutput | Select-String -Pattern "Created tunnel .* with id (.*)").Matches.Groups[1].Value
+        if (-not $tunnelId) { throw "Failed to extract tunnel ID" }
         
         $configContent = @"
         tunnel: $tunnelId
@@ -65,7 +69,11 @@ jobs:
         
         Start-Sleep -Seconds 15
         
-        $tunnelUrl = (cloudflared tunnel info $tunnelName | Select-String -Pattern "https://.+\.trycloudflare\.com").Matches.Value
+        $tunnelInfo = cloudflared tunnel info $tunnelName
+        if (-not $?) { throw "Failed to get tunnel info" }
+        
+        $tunnelUrl = ($tunnelInfo | Select-String -Pattern "https://.+\.trycloudflare\.com").Matches.Value
+        if (-not $tunnelUrl) { throw "Failed to extract tunnel URL" }
         
         Write-Host "Cloudflare Tunnel created and running."
         Write-Host "RDP Address: $tunnelUrl"
