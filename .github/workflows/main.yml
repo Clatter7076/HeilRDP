@@ -41,7 +41,7 @@ jobs:
 
     - name: Create Ngrok tunnel
       run: |
-        Start-Process ngrok tcp 3389 --log=stdout -NoNewWindow
+        Start-Process -FilePath ngrok -ArgumentList "tcp 3389 --log=stdout" -NoNewWindow
         Start-Sleep -Seconds 5
         
         # Fetch the tunnel address from Ngrok API
