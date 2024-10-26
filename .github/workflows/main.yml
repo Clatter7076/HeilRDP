@@ -32,8 +32,12 @@ jobs:
       env:
         CLOUDFLARE_TOKEN: ${{ secrets.CLOUDFLARE_TOKEN }}
       run: |
+        $certPath = "$env:USERPROFILE\.cloudflared\cert.pem"
+        if (Test-Path $certPath) {
+          Remove-Item $certPath -Force
+        }
         New-Item -ItemType Directory -Force -Path $env:USERPROFILE\.cloudflared
-        Set-Content -Path "$env:USERPROFILE\.cloudflared\cert.pem" -Value $env:CLOUDFLARE_TOKEN
+        Set-Content -Path $certPath -Value $env:CLOUDFLARE_TOKEN
         cloudflared tunnel login
         if (-not $?) { throw "Cloudflared authentication failed" }
 
@@ -50,8 +54,11 @@ jobs:
     - name: Create and Run Cloudflare Tunnel
       run: |
         $tunnelName = "rdp-tunnel-" + (Get-Random)
-        $tunnelOutput = cloudflared tunnel create $tunnelName
-        if (-not $?) { throw "Failed to create Cloudflare tunnel" }
+        $tunnelOutput = cloudflared tunnel create $tunnelName 2>&1
+        if ($LASTEXITCODE -ne 0) { 
+          Write-Host "Tunnel creation output: $tunnelOutput"
+          throw "Failed to create Cloudflare tunnel" 
+        }
         
         $tunnelId = ($tunnelOutput | Select-String -Pattern "Created tunnel .* with id (.*)").Matches.Groups[1].Value
         if (-not $tunnelId) { throw "Failed to extract tunnel ID" }
@@ -60,7 +67,8 @@ jobs:
         tunnel: $tunnelId
         credentials-file: $env:USERPROFILE\.cloudflared\$tunnelId.json
         ingress:
-          - service: rdp://localhost:3389
+          - hostname: $tunnelName.trycloudflare.com
+            service: rdp://localhost:3389
           - service: http_status:404
         "@
         Set-Content -Path "$env:USERPROFILE\.cloudflared\config.yml" -Value $configContent
@@ -69,11 +77,13 @@ jobs:
         
         Start-Sleep -Seconds 15
         
-        $tunnelInfo = cloudflared tunnel info $tunnelName
-        if (-not $?) { throw "Failed to get tunnel info" }
+        $tunnelInfo = cloudflared tunnel info $tunnelName 2>&1
+        if ($LASTEXITCODE -ne 0) { 
+          Write-Host "Tunnel info output: $tunnelInfo"
+          throw "Failed to get tunnel info" 
+        }
         
-        $tunnelUrl = ($tunnelInfo | Select-String -Pattern "https://.+\.trycloudflare\.com").Matches.Value
-        if (-not $tunnelUrl) { throw "Failed to extract tunnel URL" }
+        $tunnelUrl = "$tunnelName.trycloudflare.com"
         
         Write-Host "Cloudflare Tunnel created and running."
         Write-Host "RDP Address: $tunnelUrl"
