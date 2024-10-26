@@ -25,7 +25,7 @@ jobs:
         }
 
     - name: Install Ngrok using Chocolatey
-      run: choco install ngrok.portable -y
+      run: choco install ngrok -y
 
     - name: Authenticate with Ngrok
       run: ngrok config add-authtoken ${{ secrets.NGROK_AUTH_TOKEN }}
